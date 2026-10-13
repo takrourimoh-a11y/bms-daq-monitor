@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BMS DAQ Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0f1419; --card:#1a2129; --text:#e6e9ec; --muted:#8b949e;
+          --accent:#4fc3f7; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text);
+         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center;
+           justify-content:space-between; margin-bottom:16px; }
+  h1 { font-size:1.3rem; margin:0; }
+  .status { font-size:.9rem; color:var(--muted); }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%;
+         margin-right:6px; vertical-align:middle; background:var(--muted); }
+  h2 { font-size:.95rem; color:var(--muted); margin:18px 0 8px; font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:10px; }
+  .card { background:var(--card); border-radius:10px; padding:12px; }
+  .label { font-size:.75rem; color:var(--muted); }
+  .val { font-size:1.25rem; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .big .val { font-size:1.8rem; color:var(--accent); }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr));
+            gap:16px; margin-top:18px; }
+  .chartcard { background:var(--card); border-radius:10px; padding:12px; height:320px;
+               display:flex; flex-direction:column; }
+  .chartcard canvas { flex:1; min-height:0; }
+  .row { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  select { background:var(--bg); color:var(--text); border:1px solid #333;
+           border-radius:6px; padding:4px 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>BMS DAQ Monitor</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span></div>
+</header>
+
+<h2>Current</h2>
+<div class="grid">
+  <div class="card big"><div class="label">Current</div><div class="val" id="curA">—</div></div>
+  <div class="card"><div class="label">Sensor voltage (GPIO34)</div><div class="val" id="curV">—</div></div>
+</div>
+
+<h2>Voltage channels (ADS1115)</h2>
+<div class="grid" id="vgrid"></div>
+
+<div class="charts">
+  <div class="chartcard">
+    <div class="row"><strong>Current (A)</strong></div>
+    <canvas id="curChart"></canvas>
+  </div>
+  <div class="chartcard">
+    <div class="row">
+      <strong>Voltages (V)</strong>
+      <select id="boardSel">
+        <option value="0">ADS1</option>
+        <option value="1">ADS2</option>
+        <option value="2">ADS3</option>
+      </select>
+    </div>
+    <canvas id="vChart"></canvas>
+  </div>
+</div>
+
+<script>
+// ===== Settings =====
+const API_URL    = "https://script.google.com/macros/s/AKfycbxuW6i43hLX_mJ82J82YAUBkNQdZ-AJtFDEzzxTrOrIDwbt-sqm96r68ciFgsYDhvJT/exec";
+const REFRESH_MS = 10000;  // check for new data every 10 s
+const POINTS     = 360;    // rows to plot (360 x 5 s = last 30 min)
+const STALE_S    = 30;     // warn if no new row for this long
+const N_BOARDS   = 3;
+
+// Column positions in the Sheet
+const COL_TIME = 0, COL_ADS = 2, COL_IV = 14, COL_IA = 15;
+const COLORS = ["#4fc3f7", "#81c784", "#ffb74d", "#e57373"];
+
+let rows = [];
+
+const num  = x => { const v = parseFloat(x); return isNaN(v) ? null : v; };
+const fmtT = ms => new Date(ms).toLocaleTimeString([], { hour12: false });
+
+// Build the voltage cards
+const vgrid = document.getElementById("vgrid");
+for (let b = 0; b < N_BOARDS; b++)
+  for (let ch = 0; ch < 4; ch++)
+    vgrid.insertAdjacentHTML("beforeend",
+      `<div class="card"><div class="label">ADS${b + 1} AIN${ch}</div>
+       <div class="val" id="v${b}${ch}">—</div></div>`);
+
+const baseOpts = {
+  responsive: true, maintainAspectRatio: false, animation: false,
+  interaction: { mode: "index", intersect: false },
+  scales: {
+    x: { ticks: { color: "#8b949e", maxTicksLimit: 6 }, grid: { color: "#222" } },
+    y: { ticks: { color: "#8b949e" }, grid: { color: "#222" } }
+  },
+  plugins: { legend: { labels: { color: "#e6e9ec" } } },
+  elements: { point: { radius: 0 }, line: { borderWidth: 2 } },
+  spanGaps: true
+};
+
+const curChart = new Chart(document.getElementById("curChart"), {
+  type: "line",
+  data: { labels: [], datasets: [{ label: "Current (A)", data: [], borderColor: COLORS[0] }] },
+  options: { ...baseOpts, plugins: { legend: { display: false } } }
+});
+
+const vChart = new Chart(document.getElementById("vChart"), {
+  type: "line",
+  data: { labels: [], datasets: [0, 1, 2, 3].map(ch => ({
+    label: "AIN" + ch, data: [], borderColor: COLORS[ch] })) },
+  options: baseOpts
+});
+
+document.getElementById("boardSel").addEventListener("change", drawVoltChart);
+
+function setStatus(level, text) {
+  document.getElementById("dot").style.background =
+    { ok: "var(--ok)", warn: "var(--warn)", bad: "var(--bad)" }[level];
+  document.getElementById("statusText").textContent = text;
+}
+
+function drawVoltChart() {
+  const b = +document.getElementById("boardSel").value;
+  vChart.data.labels = rows.map(r => fmtT(r[COL_TIME]));
+  for (let ch = 0; ch < 4; ch++)
+    vChart.data.datasets[ch].data = rows.map(r => num(r[COL_ADS + b * 4 + ch]));
+  vChart.update("none");
+}
+
+function render() {
+  if (!rows.length) { setStatus("warn", "No data yet for today"); return; }
+
+  const last = rows[rows.length - 1];
+
+  // Latest values
+  const a = num(last[COL_IA]), v = num(last[COL_IV]);
+  document.getElementById("curA").textContent = a === null ? "—" : a.toFixed(2) + " A";
+  document.getElementById("curV").textContent = v === null ? "—" : v.toFixed(4) + " V";
+  for (let b = 0; b < N_BOARDS; b++)
+    for (let ch = 0; ch < 4; ch++) {
+      const x = num(last[COL_ADS + b * 4 + ch]);
+      document.getElementById(`v${b}${ch}`).textContent = x === null ? "—" : x.toFixed(4) + " V";
+    }
+
+  // Charts
+  curChart.data.labels = rows.map(r => fmtT(r[COL_TIME]));
+  curChart.data.datasets[0].data = rows.map(r => num(r[COL_IA]));
+  curChart.update("none");
+  drawVoltChart();
+
+  // Status
+  const age = Math.round((Date.now() - last[COL_TIME]) / 1000);
+  if (age <= STALE_S) setStatus("ok", `Live · last update ${fmtT(last[COL_TIME])}`);
+  else setStatus("warn", `No new data for ${age} s · last ${fmtT(last[COL_TIME])}`);
+}
+
+async function load() {
+  try {
+    const res  = await fetch(`${API_URL}?n=${POINTS}`, { cache: "no-store" });
+    const data = await res.json();
+    rows = data.rows || [];
+    render();
+  } catch (err) {
+    setStatus("bad", "Cannot reach the data source");
+  }
+}
+
+load();
+setInterval(load, REFRESH_MS);
+</script>
+</body>
+</html>
