@@ -29,12 +29,27 @@
   h2 { font-size:1rem; margin:26px 0 10px; }
   h2 span { color:var(--muted); font-weight:400; font-size:.85rem; margin-left:6px; }
 
-  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); gap:10px; }
+  .grid  { display:grid; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); gap:10px; }
+  .grid4 { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; }
   .card { background:var(--card); border-radius:10px; padding:12px; }
   .card.cur { border:1px solid #4a3a1a; }
   .label { font-size:.75rem; color:var(--muted); }
   .val { font-size:1.2rem; margin-top:4px; font-variant-numeric:tabular-nums; }
   .val.nc { color:var(--muted); }
+  .val.big2 { font-size:1.9rem; color:var(--accent); }
+  .val.big2.nc { color:var(--muted); }
+  .small { font-size:.78rem; color:var(--muted); margin-top:6px; }
+  .bar { height:6px; background:#0d1217; border-radius:3px; margin-top:8px; overflow:hidden; }
+  .bar div { height:100%; width:0; background:var(--accent); transition:width .4s; }
+  .badge { display:inline-block; margin-top:6px; padding:4px 14px; border-radius:999px;
+           font-weight:700; font-size:1.05rem; background:#2a333d; color:var(--muted); }
+  .badge.good { background:rgba(63,185,80,.15);  color:var(--ok); }
+  .badge.warn { background:rgba(210,153,34,.15); color:var(--warn); }
+  .badge.bad  { background:rgba(248,81,73,.15);  color:var(--bad); }
+  .demo { background:rgba(210,153,34,.12); border:1px solid rgba(210,153,34,.5); color:#e3b341;
+          border-radius:10px; padding:10px 12px; font-size:.85rem; margin-bottom:10px; }
+  .demo b { color:#f0c75e; }
+  .infoline { font-size:.85rem; color:var(--muted); margin:10px 0 14px; }
 
   .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:16px; }
   .chartcard { background:var(--card); border-radius:10px; padding:12px; height:320px;
@@ -116,7 +131,48 @@
   </div>
 </div>
 
-<!-- ============ 2. Trends ============ -->
+<!-- ============ 2. Battery health (AI) ============ -->
+<h2>Battery health (AI) <span id="healthTag"></span></h2>
+<div class="demo" id="demoBanner" hidden>
+  <b>DEMO</b> — example values showing how this section will work. They are <b>not measured and not predicted</b>.
+  Real results appear once the NiCd model is trained on Renewcell's data and demo mode is switched off.
+</div>
+<div class="grid4">
+  <div class="card">
+    <div class="label">State of charge (SoC)</div>
+    <div class="val big2 nc" id="socVal">—</div>
+    <div class="bar"><div id="socBar"></div></div>
+    <div class="small" id="socSub"></div>
+  </div>
+  <div class="card">
+    <div class="label">Bank state of health (SoH)</div>
+    <div class="val big2 nc" id="sohVal">—</div>
+    <div class="small" id="sohSub"></div>
+  </div>
+  <div class="card">
+    <div class="label">Remaining useful life (RUL)</div>
+    <div class="val big2 nc" id="rulVal">—</div>
+    <div class="small" id="rulSub"></div>
+  </div>
+  <div class="card">
+    <div class="label">Status</div>
+    <div class="badge" id="statusVal">—</div>
+    <div class="small" id="statusSub"></div>
+  </div>
+</div>
+<div class="infoline" id="cycleLine"></div>
+<div class="charts">
+  <div class="chartcard">
+    <div class="row"><strong>SoH per channel (%) <small>latest cycle · weakest group sets the bank SoH</small></strong></div>
+    <canvas id="sohBar"></canvas>
+  </div>
+  <div class="chartcard">
+    <div class="row"><strong>Bank SoH vs cycle (%)</strong></div>
+    <canvas id="sohTrend"></canvas>
+  </div>
+</div>
+
+<!-- ============ 3. Trends ============ -->
 <h2>Trends <span>last 30 minutes</span></h2>
 <div class="charts">
   <div class="chartcard">
@@ -136,11 +192,12 @@
   </div>
 </div>
 
-<!-- ============ 3. Raw readings ============ -->
+<!-- ============ 4. Raw readings ============ -->
 <h2>Raw readings <span>ADC volts before conversion · ~1.43 V = 0 V input</span></h2>
 <div class="grid" id="vgrid"></div>
 
-<footer>Tap layout and bank voltage are estimates until confirmed on site. Channels show 0 V (N/C) until wired and calibrated.</footer>
+<footer>Tap layout and bank voltage are estimates until confirmed on site. Channels show 0 V (N/C) until wired and calibrated.
+SoH needs a full discharge; SoC assumes the bank was full at the last detected full charge.</footer>
 
 </div>
 
@@ -150,30 +207,34 @@ const API_URL    = "https://script.google.com/macros/s/AKfycbxuW6i43hLX_mJ82J82Y
 const REFRESH_MS = 10000;  // check for new data every 10 s
 const POINTS     = 360;    // rows to plot (360 x 5 s = last 30 min)
 const STALE_S    = 30;     // warn if no new row for this long
-
-const N_BOARDS = 3;
-const N_CH     = N_BOARDS * 4;                 // 12 channels
-const GROUPS   = [7,7,7,7,7,7,7,7,7,8,8,8];    // cells per channel (87 total)
-
-// Battery-side conversion per channel:  batteryV = (rawV - ZERO_V[i]) * SCALE[i]
-// Leave SCALE[i] = null while a channel is NOT wired to the battery -> shown as 0 V (N/C)
-const ZERO_V = Array(N_CH).fill(1.435);        // raw reading at 0 V input
-const SCALE  = Array(N_CH).fill(null);         // fill in after calibration
-
-const CURRENT_CONNECTED = false;               // set true once the clamp is on the load cable
-
-// Chart axis ranges (they grow automatically if readings go higher)
+const N_BOARDS   = 3;
+const N_CH       = 12;
 const CUR_AXIS_MAX = 10;   // A
 const V_AXIS_MAX   = 15;   // V per channel
 
+// Calibration and layout come from the Apps Script; these are only start-up defaults
+let CAL = {
+  groups: [7,7,7,7,7,7,7,7,7,8,8,8],
+  zero: Array(N_CH).fill(1.435),
+  scale: Array(N_CH).fill(null),
+  currentConnected: false,
+  ratedAh: 740,
+  eolSoH: 80
+};
+
 // Sheet columns
 const COL_TIME = 0, COL_ADS = 2, COL_IV = 14, COL_IA = 15;
+// Health tab columns
+const H_TIME = 0, H_CYC = 1, H_AH = 4, H_MEAS = 5, H_BANK = 6, H_CH = 7;
 const COLORS = ["#4fc3f7", "#81c784", "#ffb74d", "#e57373"];
+const SOH_COLOR = { good: "#3fb950", warn: "#d29922", bad: "#f85149", none: "#4a525c" };
 
 // ================= Helpers =================
 let rows = [];
-const num  = x => { const v = parseFloat(x); return isNaN(v) ? null : v; };
-const fmtT = ms => new Date(ms).toLocaleTimeString([], { hour12: false });
+const num   = x => { const v = parseFloat(x); return isNaN(v) ? null : v; };
+const fmtT  = ms => new Date(ms).toLocaleTimeString([], { hour12: false });
+const fmtDT = ms => new Date(ms).toLocaleString([], { hour12: false, day: "2-digit", month: "short",
+                                                       hour: "2-digit", minute: "2-digit" });
 const SVGNS = "http://www.w3.org/2000/svg";
 function el(tag, attrs, parent, text) {
   const e = document.createElementNS(SVGNS, tag);
@@ -182,16 +243,20 @@ function el(tag, attrs, parent, text) {
   parent.appendChild(e);
   return e;
 }
+function sohClass(s) {
+  if (s === null || s === undefined) return "none";
+  return s >= CAL.eolSoH + 5 ? "good" : s >= CAL.eolSoH ? "warn" : "bad";
+}
 
 // Battery volts for channel i in a row (0 if not connected)
 function battV(i, row) {
-  if (!row || SCALE[i] === null) return 0;
+  if (!row || CAL.scale[i] === null) return 0;
   const raw = num(row[COL_ADS + i]);
-  return raw === null ? null : (raw - ZERO_V[i]) * SCALE[i];
+  return raw === null ? null : (raw - CAL.zero[i]) * CAL.scale[i];
 }
 // Load current in a row (0 if not connected)
 function loadA(row) {
-  if (!row || !CURRENT_CONNECTED) return 0;
+  if (!row || !CAL.currentConnected) return 0;
   return num(row[COL_IA]);
 }
 
@@ -208,8 +273,8 @@ vgrid.insertAdjacentHTML("beforeend",
 
 // ================= Charts =================
 const axisX = { ticks: { color: "#8b949e", maxTicksLimit: 6 }, grid: { color: "#222" } };
-const axisY = (unit, max) => ({
-  min: 0, suggestedMax: max,
+const axisY = (unit, min, max, fixed) => ({
+  min: min, [fixed ? "max" : "suggestedMax"]: max,
   ticks: { color: "#8b949e", callback: v => v + " " + unit },
   grid: { color: "#222" }
 });
@@ -219,13 +284,13 @@ const common = {
   elements: { point: { radius: 0 }, line: { borderWidth: 2 } },
   spanGaps: true
 };
-
-document.getElementById("curTag").textContent = CURRENT_CONNECTED ? "" : "· N/C";
+const eolLine = { type: "line", label: "End of life", data: [], borderColor: "#f85149",
+                  borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0 };
 
 const curChart = new Chart(document.getElementById("curChart"), {
   type: "line",
   data: { labels: [], datasets: [{ label: "Load current", data: [], borderColor: COLORS[0] }] },
-  options: { ...common, scales: { x: axisX, y: axisY("A", CUR_AXIS_MAX) },
+  options: { ...common, scales: { x: axisX, y: axisY("A", 0, CUR_AXIS_MAX) },
              plugins: { legend: { display: false } } }
 });
 
@@ -233,18 +298,41 @@ const vChart = new Chart(document.getElementById("vChart"), {
   type: "line",
   data: { labels: [], datasets: [0, 1, 2, 3].map(ch => ({
     label: "CH" + (ch + 1), data: [], borderColor: COLORS[ch] })) },
-  options: { ...common, scales: { x: axisX, y: axisY("V", V_AXIS_MAX) },
+  options: { ...common, scales: { x: axisX, y: axisY("V", 0, V_AXIS_MAX) },
+             plugins: { legend: { labels: { color: "#e6e9ec" } } } }
+});
+
+const sohBarChart = new Chart(document.getElementById("sohBar"), {
+  type: "bar",
+  data: { labels: Array.from({ length: N_CH }, (_, i) => "CH" + (i + 1)),
+          datasets: [{ label: "SoH", data: [], backgroundColor: [], borderRadius: 4 }, { ...eolLine }] },
+  options: { ...common, scales: { x: axisX, y: axisY("%", 50, 100, true) },
+             plugins: { legend: { display: false } } }
+});
+
+const sohTrendChart = new Chart(document.getElementById("sohTrend"), {
+  type: "line",
+  data: { labels: [], datasets: [
+    { label: "Bank SoH (AI)", data: [], borderColor: COLORS[0], pointRadius: 3 },
+    { label: "Measured (capacity test)", data: [], borderColor: "#ffb74d",
+      backgroundColor: "#ffb74d", showLine: false, pointRadius: 5 },
+    { ...eolLine } ] },
+  options: { ...common, scales: { x: axisX, y: axisY("%", 50, 100, true) },
              plugins: { legend: { labels: { color: "#e6e9ec" } } } }
 });
 
 document.getElementById("boardSel").addEventListener("change", drawVoltChart);
 
 // ================= System diagram =================
-const chVal = [], chTag = [], tapEls = [], brdEls = [], flowEls = [];
+const chVal = [], chTag = [], tapEls = [], brdEls = [], flowEls = [], grpEls = [];
 let mainBrd, curVal, curTagD;
 
 function buildDiagram() {
   const svg = document.getElementById("diagram");
+  svg.innerHTML = "";
+  [chVal, chTag, tapEls, brdEls, flowEls, grpEls].forEach(a => a.length = 0);
+
+  const GROUPS = CAL.groups;
   const X0 = 60, X1 = 940, BY = 74, BH = 50;
   const nCells = GROUPS.reduce((a, b) => a + b, 0);
   const CW = (X1 - X0) / nCells;
@@ -255,7 +343,6 @@ function buildDiagram() {
   el("text", { x: 44,  y: 104, class: "term", "text-anchor": "middle" }, svg, "−");
   el("text", { x: 956, y: 88,  class: "term", "text-anchor": "middle" }, svg, "+");
 
-  // Main cables: bank + -> load -> bank −
   const posD = "M 940 99 H 975 V 525 H 900";
   const negD = "M 720 525 H 25 V 99 H 60";
   el("path", { d: posD, class: "cable pos" }, svg);
@@ -263,33 +350,30 @@ function buildDiagram() {
   flowEls.push(el("path", { d: posD, class: "flow" }, svg));
   flowEls.push(el("path", { d: negD, class: "flow" }, svg));
 
-  // Cell groups + reading above each segment
   let cell = 0;
   GROUPS.forEach((n, g) => {
     const gx = X0 + cell * CW, gw = n * CW, mx = gx + gw / 2;
     chVal[g] = el("text", { x: mx, y: 44, class: "d-val nc", "text-anchor": "middle" }, svg, "0.00 V");
     chTag[g] = el("text", { x: mx, y: 60, class: "d-small", "text-anchor": "middle" }, svg, "(N/C)");
-    el("rect", { x: gx, y: BY - 4, width: gw, height: BH + 8, rx: 4,
-                 class: g % 2 ? "grp-b" : "grp-a" }, svg);
+    grpEls[g] = el("rect", { x: gx, y: BY - 4, width: gw, height: BH + 8, rx: 4,
+                             class: g % 2 ? "grp-b" : "grp-a" }, svg);
     for (let k = 0; k < n; k++)
       el("rect", { x: X0 + (cell + k) * CW + 1, y: BY, width: CW - 2, height: BH,
                    rx: 1.5, class: "cell" }, svg);
     cell += n;
   });
 
-  // Tap wires (13 taps for 12 channels)
   const bounds = [0];
   GROUPS.forEach(n => bounds.push(bounds[bounds.length - 1] + n));
   bounds.forEach((c, i) => {
     const tx = X0 + c * CW;
-    const ex = BOX.x + 20 + i * ((BOX.w - 40) / N_CH);
+    const ex = BOX.x + 20 + i * ((BOX.w - 40) / GROUPS.length);
     tapEls.push(el("path", {
       d: `M ${tx} ${BY + BH + 4} V ${BY + BH + 56} L ${ex} ${BOX.y - 20} V ${BOX.y}`,
       class: "tap nc" }, svg));
     el("circle", { cx: tx, cy: BY + BH + 4, r: 3, class: "tap-dot" }, svg);
   });
 
-  // Channel name + cell range below each segment
   cell = 0;
   GROUPS.forEach((n, g) => {
     const mx = X0 + (cell + n / 2) * CW;
@@ -299,7 +383,6 @@ function buildDiagram() {
     cell += n;
   });
 
-  // DAQ box with main board + 3 voltage boards
   el("rect", { x: BOX.x, y: BOX.y, width: BOX.w, height: BOX.h, rx: 10, class: "box" }, svg);
   el("text", { x: BOX.x + 12, y: BOX.y + 20, class: "d-label" }, svg, "DAQ box");
 
@@ -319,7 +402,6 @@ function buildDiagram() {
   el("text", { x: 500, y: 470, class: "d-note", "text-anchor": "middle" }, svg,
      "ESP32 → WiFi → Google Sheet → this page");
 
-  // Current sensor (one direction, towards the load)
   el("text", { x: 955, y: 322, class: "d-label", "text-anchor": "end" }, svg, "Current sensor");
   el("text", { x: 955, y: 338, class: "d-note",  "text-anchor": "end" }, svg, "one direction → load");
   curVal  = el("text", { x: 955, y: 360, class: "d-val nc", "text-anchor": "end" }, svg, "0.00 A");
@@ -329,7 +411,6 @@ function buildDiagram() {
   el("path", { d: "M 968 458 L 982 458 L 975 470 Z", class: "arrow" }, svg);
   el("path", { d: "M 932 518 L 932 532 L 920 525 Z", class: "arrow" }, svg);
 
-  // Load
   el("rect", { x: 720, y: 500, width: 180, height: 50, rx: 8, class: "load" }, svg);
   el("text", { x: 810, y: 521, class: "d-label", "text-anchor": "middle" }, svg, "Load");
   el("text", { x: 810, y: 538, class: "d-note",  "text-anchor": "middle" }, svg, "light load (repurposed bank)");
@@ -337,19 +418,17 @@ function buildDiagram() {
 
 function updateDiagram(last) {
   const live = [];
-  for (let i = 0; i < N_CH; i++) {
-    live[i] = SCALE[i] !== null && last && num(last[COL_ADS + i]) !== null;
+  for (let i = 0; i < CAL.groups.length; i++) {
+    live[i] = CAL.scale[i] !== null && last && num(last[COL_ADS + i]) !== null;
     const v = live[i] ? battV(i, last) : 0;
     chVal[i].textContent = v.toFixed(2) + " V";
     chVal[i].setAttribute("class", "d-val " + (live[i] ? "live" : "nc"));
     chTag[i].textContent = live[i] ? "" : "(N/C)";
   }
-
   tapEls.forEach((t, i) => {
-    const on = (i > 0 && live[i - 1]) || (i < N_CH && live[i]);
+    const on = (i > 0 && live[i - 1]) || (i < live.length && live[i]);
     t.setAttribute("class", "tap " + (on ? "live" : "nc"));
   });
-
   brdEls.forEach((b, j) => {
     let on = false;
     for (let ch = 0; ch < 4; ch++)
@@ -359,14 +438,138 @@ function updateDiagram(last) {
   mainBrd.setAttribute("class", "brd" + (last ? " on" : ""));
 
   const a = loadA(last);
-  const curLive = CURRENT_CONNECTED && a !== null;
+  const curLive = CAL.currentConnected && a !== null;
   curVal.textContent = (curLive ? a : 0).toFixed(2) + " A";
   curVal.setAttribute("class", "d-val " + (curLive ? "live" : "nc"));
   curTagD.textContent = curLive ? "" : "(N/C)";
   flowEls.forEach(f => f.setAttribute("class", "flow" + (curLive && a > 0.2 ? " on" : "")));
 }
 
-// ================= Rendering =================
+// Tint each group in the drawing by its SoH (real results only, not demo)
+function tintGroups(sohList) {
+  grpEls.forEach((g, i) => {
+    const s = sohList ? sohList[i] : null;
+    if (s === null || s === undefined) { g.removeAttribute("style"); return; }
+    const c = SOH_COLOR[sohClass(s)];
+    g.setAttribute("style", `fill:${c}33; stroke:${c}`);
+  });
+}
+
+// ================= Battery health =================
+function demoHealth() {
+  const now = Date.now();
+  const OFF = [1.2, 0.4, 0.8, -0.3, 1.0, 0.6, -0.6, 0.9, 0.2, -4.0, 0.5, 0.7];
+  const cycles = [];
+  for (let k = 1; k <= 12; k++) {
+    const base = 97 - 0.6 * k;
+    const ch = OFF.map((o, i) => Math.round((base + o - (i === 9 ? 0.15 * k : 0)) * 10) / 10);
+    cycles.push([now - (12 - k) * 2 * 86400000, k, "DEMO", 9.6, Math.round(740 * base / 100),
+                 k % 4 === 0 ? Math.round((base - 0.4) * 10) / 10 : null, Math.min(...ch), ...ch]);
+  }
+  return { demo: true, model: "Demo values", soc: 76, ahOut: 177.6, lastFull: now - 6 * 3600000,
+           cycle: { start: now - 2.4 * 3600000, ah: 177.6 }, cycles: cycles };
+}
+
+function estimateRUL(cycles) {
+  const pts = cycles.filter(c => c[H_BANK] !== null).slice(-8).map(c => [c[H_CYC], c[H_BANK]]);
+  if (pts.length < 3) return null;
+  const n = pts.length;
+  const mx = pts.reduce((a, p) => a + p[0], 0) / n, my = pts.reduce((a, p) => a + p[1], 0) / n;
+  let sxy = 0, sxx = 0;
+  pts.forEach(([x, y]) => { sxy += (x - mx) * (y - my); sxx += (x - mx) ** 2; });
+  const slope = sxy / sxx;
+  if (!(slope < 0)) return Infinity;
+  return Math.max(0, Math.floor((pts[n - 1][1] - CAL.eolSoH) / -slope));
+}
+
+function setVal(id, text, isLive) {
+  const e = document.getElementById(id);
+  e.textContent = text;
+  e.classList.toggle("nc", !isLive);
+}
+
+function renderHealth(h) {
+  const useDemo = !!(h && h.demo);
+  const H = useDemo ? demoHealth() : (h || {});
+  const eol = CAL.eolSoH;
+
+  document.getElementById("demoBanner").hidden = !useDemo;
+  document.getElementById("healthTag").textContent =
+    useDemo ? "· DEMO" : (H.model ? "· model: " + H.model : "· awaiting NiCd model");
+
+  // SoC
+  if (H.soc !== null && H.soc !== undefined) {
+    setVal("socVal", Math.round(H.soc) + " %", true);
+    document.getElementById("socBar").style.width = Math.max(0, Math.min(100, H.soc)) + "%";
+    document.getElementById("socSub").textContent =
+      `${(H.ahOut || 0).toFixed(1)} of ${CAL.ratedAh} Ah used` +
+      (H.lastFull ? ` · last full charge ${fmtDT(H.lastFull)}` : " · no full charge seen yet");
+  } else {
+    setVal("socVal", "N/C", false);
+    document.getElementById("socBar").style.width = "0";
+    document.getElementById("socSub").textContent = "Needs the current sensor connected";
+  }
+
+  // SoH, RUL, status
+  const cycles = H.cycles || [];
+  const last = cycles.length ? cycles[cycles.length - 1] : null;
+  const bank = last ? last[H_BANK] : null;
+  const chSoH = last ? last.slice(H_CH, H_CH + N_CH) : null;
+
+  if (bank !== null) {
+    const weakest = chSoH.indexOf(Math.min(...chSoH.filter(x => x !== null)));
+    setVal("sohVal", bank.toFixed(1) + " %", true);
+    document.getElementById("sohSub").textContent =
+      `Cycle ${last[H_CYC]} · weakest group CH${weakest + 1}` +
+      (last[H_MEAS] !== null ? ` · measured ${last[H_MEAS]} %` : "");
+  } else {
+    setVal("sohVal", "N/C", false);
+    document.getElementById("sohSub").textContent =
+      H.model ? "Waiting for the first full discharge" : "No model loaded yet";
+  }
+
+  const rul = estimateRUL(cycles);
+  if (rul === null) {
+    setVal("rulVal", "—", false);
+    document.getElementById("rulSub").textContent = "Needs at least 3 cycles";
+  } else if (rul === Infinity) {
+    setVal("rulVal", "No fade", true);
+    document.getElementById("rulSub").textContent = "SoH not dropping yet";
+  } else {
+    setVal("rulVal", rul + " cycles", true);
+    document.getElementById("rulSub").textContent = `Until ${eol} % SoH (trend of last cycles)`;
+  }
+
+  const cls = sohClass(bank);
+  const badge = document.getElementById("statusVal");
+  badge.className = "badge " + (cls === "none" ? "" : cls);
+  badge.textContent = { good: "GOOD", warn: "WARNING", bad: "REPLACE", none: "—" }[cls];
+  document.getElementById("statusSub").textContent =
+    `GOOD ≥ ${eol + 5} % · WARNING ${eol}–${eol + 5} % · REPLACE < ${eol} %`;
+
+  // Cycle line
+  document.getElementById("cycleLine").textContent =
+    (H.cycle ? `● Discharging since ${fmtT(H.cycle.start)} · ${H.cycle.ah.toFixed(1)} Ah removed`
+             : "○ Idle · no discharge in progress") +
+    (last ? ` · Last cycle ended ${fmtDT(last[H_TIME])}` : "");
+
+  // Charts
+  sohBarChart.data.datasets[0].data = chSoH || Array(N_CH).fill(null);
+  sohBarChart.data.datasets[0].backgroundColor =
+    (chSoH || Array(N_CH).fill(null)).map(s => SOH_COLOR[sohClass(s)]);
+  sohBarChart.data.datasets[1].data = Array(N_CH).fill(eol);
+  sohBarChart.update("none");
+
+  sohTrendChart.data.labels = cycles.map(c => "C" + c[H_CYC]);
+  sohTrendChart.data.datasets[0].data = cycles.map(c => c[H_BANK]);
+  sohTrendChart.data.datasets[1].data = cycles.map(c => c[H_MEAS]);
+  sohTrendChart.data.datasets[2].data = cycles.map(() => eol);
+  sohTrendChart.update("none");
+
+  tintGroups(useDemo ? null : chSoH);
+}
+
+// ================= Live data rendering =================
 function setStatus(level, text) {
   document.getElementById("dot").style.background =
     { ok: "var(--ok)", warn: "var(--warn)", bad: "var(--bad)" }[level];
@@ -378,7 +581,7 @@ function drawVoltChart() {
   vChart.data.labels = rows.map(r => fmtT(r[COL_TIME]));
   for (let ch = 0; ch < 4; ch++) {
     const i = b * 4 + ch;
-    vChart.data.datasets[ch].label = `CH${i + 1}` + (SCALE[i] === null ? " (N/C)" : "");
+    vChart.data.datasets[ch].label = `CH${i + 1}` + (CAL.scale[i] === null ? " (N/C)" : "");
     vChart.data.datasets[ch].data = rows.map(r => battV(i, r));
   }
   vChart.update("none");
@@ -387,9 +590,9 @@ function drawVoltChart() {
 function render() {
   const last = rows.length ? rows[rows.length - 1] : null;
   updateDiagram(last);
+  document.getElementById("curTag").textContent = CAL.currentConnected ? "" : "· N/C";
   if (!last) { setStatus("warn", "No data yet for today"); return; }
 
-  // Raw cards
   for (let b = 0; b < N_BOARDS; b++)
     for (let ch = 0; ch < 4; ch++) {
       const x = num(last[COL_ADS + b * 4 + ch]);
@@ -398,24 +601,30 @@ function render() {
   const v = num(last[COL_IV]);
   document.getElementById("curV").textContent = v === null ? "—" : v.toFixed(4) + " V";
 
-  // Charts
   curChart.data.labels = rows.map(r => fmtT(r[COL_TIME]));
   curChart.data.datasets[0].data = rows.map(r => loadA(r));
   curChart.update("none");
   drawVoltChart();
 
-  // Status
   const age = Math.round((Date.now() - last[COL_TIME]) / 1000);
   if (age <= STALE_S) setStatus("ok", `Live · last update ${fmtT(last[COL_TIME])}`);
   else setStatus("warn", `No new data for ${age} s · last ${fmtT(last[COL_TIME])}`);
+}
+
+function applyCal(c) {
+  const groupsChanged = JSON.stringify(c.groups) !== JSON.stringify(CAL.groups);
+  CAL = Object.assign({}, CAL, c);
+  if (groupsChanged) buildDiagram();
 }
 
 async function load() {
   try {
     const res  = await fetch(`${API_URL}?n=${POINTS}`, { cache: "no-store" });
     const data = await res.json();
+    if (data.cal) applyCal(data.cal);
     rows = data.rows || [];
     render();
+    renderHealth(data.health);
   } catch (err) {
     setStatus("bad", "Cannot reach the data source");
   }
