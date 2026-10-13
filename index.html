@@ -6,92 +6,191 @@
 <title>BMS DAQ Monitor</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-  :root { --bg:#0f1419; --card:#1a2129; --text:#e6e9ec; --muted:#8b949e;
+  :root { --bg:#0f1419; --card:#1a2129; --line:#2a333d; --text:#e6e9ec; --muted:#8b949e;
           --accent:#4fc3f7; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
   * { box-sizing: border-box; }
-  body { margin:0; padding:16px; background:var(--bg); color:var(--text);
+  body { margin:0; background:var(--bg); color:var(--text);
          font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center;
-           justify-content:space-between; margin-bottom:16px; }
-  h1 { font-size:1.3rem; margin:0; }
-  .status { font-size:.9rem; color:var(--muted); }
+  .wrap { max-width:1200px; margin:0 auto; padding:16px; }
+
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; justify-content:space-between;
+           padding-bottom:14px; border-bottom:1px solid var(--line); }
+  h1 { font-size:1.4rem; margin:0; }
+  .sub { color:var(--muted); font-size:.9rem; margin-top:4px; }
+  .status { font-size:.85rem; color:var(--muted); background:var(--card); padding:6px 12px; border-radius:999px; }
   .dot { display:inline-block; width:10px; height:10px; border-radius:50%;
          margin-right:6px; vertical-align:middle; background:var(--muted); }
-  h2 { font-size:.95rem; color:var(--muted); margin:18px 0 8px; font-weight:600; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:10px; }
+
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 4px; }
+  .chip { background:var(--card); border:1px solid var(--line); border-radius:999px;
+          padding:5px 12px; font-size:.8rem; color:var(--muted); }
+  .chip b { color:var(--text); font-weight:600; }
+
+  h2 { font-size:1rem; margin:26px 0 10px; }
+  h2 span { color:var(--muted); font-weight:400; font-size:.85rem; margin-left:6px; }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); gap:10px; }
   .card { background:var(--card); border-radius:10px; padding:12px; }
   .label { font-size:.75rem; color:var(--muted); }
-  .val { font-size:1.25rem; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .val { font-size:1.2rem; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .val.nc { color:var(--muted); }
   .big .val { font-size:1.8rem; color:var(--accent); }
-  .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr));
-            gap:16px; margin-top:18px; }
+  .big .val.nc { font-size:1.2rem; color:var(--muted); }
+
+  .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:16px; }
   .chartcard { background:var(--card); border-radius:10px; padding:12px; height:320px;
                display:flex; flex-direction:column; }
   .chartcard canvas { flex:1; min-height:0; }
-  .row { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
-  select { background:var(--bg); color:var(--text); border:1px solid #333;
-           border-radius:6px; padding:4px 8px; }
+  .row { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px; }
+  select { background:var(--bg); color:var(--text); border:1px solid #333; border-radius:6px; padding:4px 8px; }
+
+  .diagram { background:var(--card); border-radius:12px; padding:12px; overflow-x:auto; }
+  .diagram svg { display:block; width:100%; min-width:720px; height:auto; }
+  .legend { display:flex; flex-wrap:wrap; gap:16px; font-size:.8rem; color:var(--muted); margin-top:10px; }
+  .sw { display:inline-block; width:18px; height:3px; vertical-align:middle; margin-right:6px; }
+
+  /* Diagram styles */
+  svg text { fill:var(--text); font-family:inherit; }
+  .d-title { font-size:15px; font-weight:600; }
+  .d-small { font-size:10px; fill:var(--muted); }
+  .d-note  { font-size:11px; fill:var(--muted); }
+  .d-ch    { font-size:12px; font-weight:600; }
+  .d-val   { font-size:12px; font-variant-numeric:tabular-nums; }
+  .d-val.nc { fill:var(--muted); }
+  .d-val.live { fill:var(--accent); }
+  .d-label { font-size:13px; font-weight:600; }
+  .term { font-size:18px; font-weight:700; }
+  .grp-a { fill:rgba(79,195,247,.07); stroke:#2f4a5c; }
+  .grp-b { fill:rgba(129,199,132,.07); stroke:#35503a; }
+  .cell { fill:#2c3946; stroke:#3d4c5b; stroke-width:.5; }
+  .tap { fill:none; stroke-width:1.6; }
+  .tap.nc { stroke:#4a525c; stroke-dasharray:4 4; }
+  .tap.live { stroke:var(--ok); }
+  .tap-dot { fill:#8b949e; }
+  .cable { fill:none; stroke-width:4; stroke-linejoin:round; }
+  .cable.pos { stroke:#e57373; }
+  .cable.neg { stroke:#5c6bc0; }
+  .flow { fill:none; stroke:#fff; stroke-width:2; stroke-dasharray:6 14; opacity:0; }
+  .flow.on { opacity:.7; animation:flow 1s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset:-20; } }
+  .box { fill:#121920; stroke:var(--accent); stroke-width:1.5; }
+  .brd { fill:#1f2a33; stroke:#4a525c; stroke-width:1.5; }
+  .brd.on { stroke:var(--ok); }
+  .clamp { fill:#2a2f36; stroke:var(--warn); stroke-width:2; }
+  .sig { fill:none; stroke:var(--warn); stroke-width:1.4; stroke-dasharray:5 4; }
+  .arrow { fill:#e57373; }
+  .load { fill:#1f2a33; stroke:#e6e9ec; stroke-width:1.5; }
+
+  footer { color:var(--muted); font-size:.8rem; margin:28px 0 8px; }
 </style>
 </head>
 <body>
+<div class="wrap">
 
 <header>
-  <h1>BMS DAQ Monitor</h1>
+  <div>
+    <h1>BMS DAQ Monitor</h1>
+    <div class="sub">AI-Enabled BMS · Second-life NiCd battery bank · live measurements</div>
+  </div>
   <div class="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span></div>
 </header>
 
-<h2>Current</h2>
-<div class="grid">
-  <div class="card big"><div class="label">Current</div><div class="val" id="curA">—</div></div>
-  <div class="card"><div class="label">Sensor voltage (GPIO34)</div><div class="val" id="curV">—</div></div>
+<div class="chips">
+  <span class="chip">Bank <b>NiCd · 87 cells · ~110 V DC system</b> (est.)</span>
+  <span class="chip">Voltage taps <b>12 groups of 7–8 cells</b></span>
+  <span class="chip">Channel range <b>50 V</b> (to change → ~20 V)</span>
+  <span class="chip">Current <b>one-direction clamp → load</b></span>
+  <span class="chip">Upload <b>every 5 s</b> · page refresh <b>10 s</b></span>
 </div>
 
-<h2>Voltage channels (ADS1115)</h2>
+<h2>Current</h2>
+<div class="grid">
+  <div class="card big"><div class="label">Load current</div><div class="val" id="curA">—</div></div>
+  <div class="card"><div class="label">Sensor output (GPIO34)</div><div class="val" id="curV">—</div></div>
+</div>
+
+<h2>Voltage channels <span>raw ADC readings, before conversion to battery volts</span></h2>
 <div class="grid" id="vgrid"></div>
 
+<h2>Trends <span>last 30 minutes</span></h2>
 <div class="charts">
   <div class="chartcard">
-    <div class="row"><strong>Current (A)</strong></div>
+    <div class="row"><strong id="curTitle">Current (A)</strong></div>
     <canvas id="curChart"></canvas>
   </div>
   <div class="chartcard">
     <div class="row">
-      <strong>Voltages (V)</strong>
+      <strong>Raw ADC voltages (V)</strong>
       <select id="boardSel">
-        <option value="0">ADS1</option>
-        <option value="1">ADS2</option>
-        <option value="2">ADS3</option>
+        <option value="0">V-board 1 · CH1–4</option>
+        <option value="1">V-board 2 · CH5–8</option>
+        <option value="2">V-board 3 · CH9–12</option>
       </select>
     </div>
     <canvas id="vChart"></canvas>
   </div>
 </div>
 
+<h2>System layout <span>live values on each tap</span></h2>
+<div class="diagram">
+  <svg id="diagram" viewBox="0 0 1000 560" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div class="legend">
+    <span><span class="sw" style="background:var(--ok)"></span>Connected &amp; reading</span>
+    <span><span class="sw" style="background:#4a525c"></span>Not connected (N/C)</span>
+    <span><span class="sw" style="background:#e57373"></span>Bank + to load</span>
+    <span><span class="sw" style="background:#5c6bc0"></span>Load return to bank −</span>
+    <span><span class="sw" style="background:var(--warn)"></span>Current sensor signal</span>
+  </div>
+</div>
+
+<footer>Tap layout and bank voltage are estimates until confirmed on site. Channels show N/C until wired and calibrated.</footer>
+
+</div>
+
 <script>
-// ===== Settings =====
+// ================= Settings =================
 const API_URL    = "https://script.google.com/macros/s/AKfycbxuW6i43hLX_mJ82J82YAUBkNQdZ-AJtFDEzzxTrOrIDwbt-sqm96r68ciFgsYDhvJT/exec";
 const REFRESH_MS = 10000;  // check for new data every 10 s
 const POINTS     = 360;    // rows to plot (360 x 5 s = last 30 min)
 const STALE_S    = 30;     // warn if no new row for this long
-const N_BOARDS   = 3;
 
-// Column positions in the Sheet
+const N_BOARDS = 3;
+const N_CH     = N_BOARDS * 4;                 // 12 channels
+const GROUPS   = [7,7,7,7,7,7,7,7,7,8,8,8];    // cells per channel (87 total)
+
+// Battery-side conversion per channel:  batteryV = (rawV - ZERO_V[i]) * SCALE[i]
+// Leave SCALE[i] = null while a channel is NOT wired to the battery -> shown as "N/C"
+const ZERO_V = Array(N_CH).fill(1.435);        // raw reading at 0 V input
+const SCALE  = Array(N_CH).fill(null);         // fill in after calibration
+
+const CURRENT_CONNECTED = false;               // set true once the clamp is on the load cable
+
+// Sheet columns
 const COL_TIME = 0, COL_ADS = 2, COL_IV = 14, COL_IA = 15;
 const COLORS = ["#4fc3f7", "#81c784", "#ffb74d", "#e57373"];
 
+// ================= Helpers =================
 let rows = [];
-
 const num  = x => { const v = parseFloat(x); return isNaN(v) ? null : v; };
 const fmtT = ms => new Date(ms).toLocaleTimeString([], { hour12: false });
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  parent.appendChild(e);
+  return e;
+}
 
-// Build the voltage cards
+// ================= Raw value cards =================
 const vgrid = document.getElementById("vgrid");
 for (let b = 0; b < N_BOARDS; b++)
   for (let ch = 0; ch < 4; ch++)
     vgrid.insertAdjacentHTML("beforeend",
-      `<div class="card"><div class="label">ADS${b + 1} AIN${ch}</div>
+      `<div class="card"><div class="label">CH${b * 4 + ch + 1} · ADS${b + 1} AIN${ch}</div>
        <div class="val" id="v${b}${ch}">—</div></div>`);
 
+// ================= Charts =================
 const baseOpts = {
   responsive: true, maintainAspectRatio: false, animation: false,
   interaction: { mode: "index", intersect: false },
@@ -104,9 +203,12 @@ const baseOpts = {
   spanGaps: true
 };
 
+document.getElementById("curTitle").textContent =
+  CURRENT_CONNECTED ? "Current (A)" : "Current sensor output (V) · not connected";
+
 const curChart = new Chart(document.getElementById("curChart"), {
   type: "line",
-  data: { labels: [], datasets: [{ label: "Current (A)", data: [], borderColor: COLORS[0] }] },
+  data: { labels: [], datasets: [{ label: "Current", data: [], borderColor: COLORS[0] }] },
   options: { ...baseOpts, plugins: { legend: { display: false } } }
 });
 
@@ -119,6 +221,132 @@ const vChart = new Chart(document.getElementById("vChart"), {
 
 document.getElementById("boardSel").addEventListener("change", drawVoltChart);
 
+// ================= System diagram =================
+const chText = [], tapEls = [], brdEls = [], flowEls = [];
+let mainBrd, curDiag;
+
+function buildDiagram() {
+  const svg = document.getElementById("diagram");
+  const X0 = 60, X1 = 940, BY = 70, BH = 50;
+  const nCells = GROUPS.reduce((a, b) => a + b, 0);
+  const CW = (X1 - X0) / nCells;
+  const BOX = { x: 330, y: 300, w: 340, h: 140 };
+
+  el("text", { x: 500, y: 34, class: "d-title", "text-anchor": "middle" }, svg,
+     `NiCd battery bank · ${nCells} cells · ~104 V nominal (estimate)`);
+  el("text", { x: 52,  y: 62, class: "term", "text-anchor": "middle" }, svg, "−");
+  el("text", { x: 948, y: 62, class: "term", "text-anchor": "middle" }, svg, "+");
+
+  // Main cables: bank + -> load -> bank −
+  const posD = "M 940 95 H 975 V 525 H 900";
+  const negD = "M 760 525 H 25 V 95 H 60";
+  el("path", { d: posD, class: "cable pos" }, svg);
+  el("path", { d: negD, class: "cable neg" }, svg);
+  flowEls.push(el("path", { d: posD, class: "flow" }, svg));
+  flowEls.push(el("path", { d: negD, class: "flow" }, svg));
+
+  // Cell groups
+  let cell = 0;
+  GROUPS.forEach((n, g) => {
+    const gx = X0 + cell * CW, gw = n * CW;
+    el("rect", { x: gx, y: BY - 4, width: gw, height: BH + 8, rx: 4,
+                 class: g % 2 ? "grp-b" : "grp-a" }, svg);
+    for (let k = 0; k < n; k++)
+      el("rect", { x: X0 + (cell + k) * CW + 1, y: BY, width: CW - 2, height: BH,
+                   rx: 1.5, class: "cell" }, svg);
+    el("text", { x: gx + gw / 2, y: BY - 10, class: "d-small", "text-anchor": "middle" }, svg,
+       `${cell + 1}–${cell + n}`);
+    cell += n;
+  });
+
+  // Tap wires (13 taps for 12 channels)
+  const bounds = [0];
+  GROUPS.forEach(n => bounds.push(bounds[bounds.length - 1] + n));
+  bounds.forEach((c, i) => {
+    const tx = X0 + c * CW;
+    const ex = BOX.x + 20 + i * ((BOX.w - 40) / N_CH);
+    tapEls.push(el("path", {
+      d: `M ${tx} ${BY + BH + 4} V ${BY + BH + 58} L ${ex} ${BOX.y - 20} V ${BOX.y}`,
+      class: "tap nc" }, svg));
+    el("circle", { cx: tx, cy: BY + BH + 4, r: 3, class: "tap-dot" }, svg);
+  });
+
+  // Channel labels and live values
+  cell = 0;
+  GROUPS.forEach((n, g) => {
+    const mx = X0 + (cell + n / 2) * CW;
+    el("text", { x: mx, y: BY + BH + 26, class: "d-ch", "text-anchor": "middle" }, svg, "CH" + (g + 1));
+    chText[g] = el("text", { x: mx, y: BY + BH + 42, class: "d-val nc", "text-anchor": "middle" }, svg, "N/C");
+    cell += n;
+  });
+
+  // DAQ box with main board + 3 voltage boards
+  el("rect", { x: BOX.x, y: BOX.y, width: BOX.w, height: BOX.h, rx: 10, class: "box" }, svg);
+  el("text", { x: BOX.x + 12, y: BOX.y + 20, class: "d-label" }, svg, "DAQ box");
+
+  mainBrd = el("rect", { x: 345, y: 332, width: 120, height: 92, rx: 6, class: "brd" }, svg);
+  el("text", { x: 405, y: 362, class: "d-label", "text-anchor": "middle" }, svg, "Main board");
+  el("text", { x: 405, y: 380, class: "d-note",  "text-anchor": "middle" }, svg, "ESP32 · WiFi");
+  el("text", { x: 405, y: 396, class: "d-note",  "text-anchor": "middle" }, svg, "current input");
+
+  for (let j = 0; j < N_BOARDS; j++) {
+    const bx = 480 + j * 62;
+    brdEls.push(el("rect", { x: bx, y: 332, width: 54, height: 92, rx: 6, class: "brd" }, svg));
+    el("text", { x: bx + 27, y: 360, class: "d-note",  "text-anchor": "middle" }, svg, "V-board");
+    el("text", { x: bx + 27, y: 380, class: "d-label", "text-anchor": "middle" }, svg, String(j + 1));
+    el("text", { x: bx + 27, y: 398, class: "d-small", "text-anchor": "middle" }, svg,
+       `CH${j * 4 + 1}–${j * 4 + 4}`);
+  }
+  el("text", { x: 500, y: 470, class: "d-note", "text-anchor": "middle" }, svg,
+     "ESP32 → WiFi → Google Sheet → this page");
+
+  // Current sensor (one direction, towards the load)
+  el("text", { x: 955, y: 345, class: "d-label", "text-anchor": "end" }, svg, "Current sensor");
+  el("text", { x: 955, y: 361, class: "d-note",  "text-anchor": "end" }, svg, "one direction → load");
+  curDiag = el("text", { x: 955, y: 380, class: "d-val nc", "text-anchor": "end" }, svg, "N/C");
+  el("rect", { x: 962, y: 395, width: 26, height: 50, rx: 8, class: "clamp" }, svg);
+  el("path", { d: "M 962 425 H 670", class: "sig" }, svg);
+  el("path", { d: "M 968 458 L 982 458 L 975 470 Z", class: "arrow" }, svg);
+  el("path", { d: "M 932 518 L 932 532 L 920 525 Z", class: "arrow" }, svg);
+
+  // Load
+  el("rect", { x: 760, y: 500, width: 140, height: 50, rx: 8, class: "load" }, svg);
+  el("text", { x: 830, y: 521, class: "d-label", "text-anchor": "middle" }, svg, "Load");
+  el("text", { x: 830, y: 538, class: "d-note",  "text-anchor": "middle" }, svg, "light load (repurposed bank)");
+}
+
+function updateDiagram(last) {
+  const live = [];
+  for (let i = 0; i < N_CH; i++) {
+    const raw = last ? num(last[COL_ADS + i]) : null;
+    live[i] = SCALE[i] !== null && raw !== null;
+    chText[i].textContent = live[i] ? ((raw - ZERO_V[i]) * SCALE[i]).toFixed(2) + " V" : "N/C";
+    chText[i].setAttribute("class", "d-val " + (live[i] ? "live" : "nc"));
+  }
+
+  tapEls.forEach((t, i) => {
+    const on = (i > 0 && live[i - 1]) || (i < N_CH && live[i]);
+    t.setAttribute("class", "tap " + (on ? "live" : "nc"));
+  });
+
+  let anyBoard = false;
+  brdEls.forEach((b, j) => {
+    let on = false;
+    for (let ch = 0; ch < 4; ch++)
+      if (last && num(last[COL_ADS + j * 4 + ch]) !== null) on = true;
+    anyBoard = anyBoard || on;
+    b.setAttribute("class", "brd" + (on ? " on" : ""));
+  });
+  mainBrd.setAttribute("class", "brd" + (last ? " on" : ""));
+
+  const a = last ? num(last[COL_IA]) : null;
+  const curLive = CURRENT_CONNECTED && a !== null;
+  curDiag.textContent = curLive ? a.toFixed(2) + " A" : "N/C";
+  curDiag.setAttribute("class", "d-val " + (curLive ? "live" : "nc"));
+  flowEls.forEach(f => f.setAttribute("class", "flow" + (curLive && a > 0.2 ? " on" : "")));
+}
+
+// ================= Rendering =================
 function setStatus(level, text) {
   document.getElementById("dot").style.background =
     { ok: "var(--ok)", warn: "var(--warn)", bad: "var(--bad)" }[level];
@@ -128,29 +356,37 @@ function setStatus(level, text) {
 function drawVoltChart() {
   const b = +document.getElementById("boardSel").value;
   vChart.data.labels = rows.map(r => fmtT(r[COL_TIME]));
-  for (let ch = 0; ch < 4; ch++)
+  for (let ch = 0; ch < 4; ch++) {
+    vChart.data.datasets[ch].label = `CH${b * 4 + ch + 1}`;
     vChart.data.datasets[ch].data = rows.map(r => num(r[COL_ADS + b * 4 + ch]));
+  }
   vChart.update("none");
 }
 
 function render() {
-  if (!rows.length) { setStatus("warn", "No data yet for today"); return; }
+  const last = rows.length ? rows[rows.length - 1] : null;
+  updateDiagram(last);
+  if (!last) { setStatus("warn", "No data yet for today"); return; }
 
-  const last = rows[rows.length - 1];
-
-  // Latest values
+  // Current cards
   const a = num(last[COL_IA]), v = num(last[COL_IV]);
-  document.getElementById("curA").textContent = a === null ? "—" : a.toFixed(2) + " A";
+  const curA = document.getElementById("curA");
+  if (CURRENT_CONNECTED && a !== null) { curA.textContent = a.toFixed(2) + " A"; curA.className = "val"; }
+  else { curA.textContent = "Not connected"; curA.className = "val nc"; }
   document.getElementById("curV").textContent = v === null ? "—" : v.toFixed(4) + " V";
+
+  // Raw voltage cards
   for (let b = 0; b < N_BOARDS; b++)
     for (let ch = 0; ch < 4; ch++) {
       const x = num(last[COL_ADS + b * 4 + ch]);
-      document.getElementById(`v${b}${ch}`).textContent = x === null ? "—" : x.toFixed(4) + " V";
+      const e = document.getElementById(`v${b}${ch}`);
+      e.textContent = x === null ? "Offline" : x.toFixed(4) + " V";
+      e.className = "val" + (x === null || SCALE[b * 4 + ch] === null ? " nc" : "");
     }
 
   // Charts
   curChart.data.labels = rows.map(r => fmtT(r[COL_TIME]));
-  curChart.data.datasets[0].data = rows.map(r => num(r[COL_IA]));
+  curChart.data.datasets[0].data = rows.map(r => num(r[CURRENT_CONNECTED ? COL_IA : COL_IV]));
   curChart.update("none");
   drawVoltChart();
 
@@ -171,6 +407,7 @@ async function load() {
   }
 }
 
+buildDiagram();
 load();
 setInterval(load, REFRESH_MS);
 </script>
