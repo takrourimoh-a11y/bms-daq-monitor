@@ -31,17 +31,17 @@
 
   .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); gap:10px; }
   .card { background:var(--card); border-radius:10px; padding:12px; }
+  .card.cur { border:1px solid #4a3a1a; }
   .label { font-size:.75rem; color:var(--muted); }
   .val { font-size:1.2rem; margin-top:4px; font-variant-numeric:tabular-nums; }
   .val.nc { color:var(--muted); }
-  .big .val { font-size:1.8rem; color:var(--accent); }
-  .big .val.nc { font-size:1.2rem; color:var(--muted); }
 
   .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:16px; }
   .chartcard { background:var(--card); border-radius:10px; padding:12px; height:320px;
                display:flex; flex-direction:column; }
   .chartcard canvas { flex:1; min-height:0; }
   .row { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px; }
+  .row small { color:var(--muted); font-weight:400; }
   select { background:var(--bg); color:var(--text); border:1px solid #333; border-radius:6px; padding:4px 8px; }
 
   .diagram { background:var(--card); border-radius:12px; padding:12px; overflow-x:auto; }
@@ -55,7 +55,7 @@
   .d-small { font-size:10px; fill:var(--muted); }
   .d-note  { font-size:11px; fill:var(--muted); }
   .d-ch    { font-size:12px; font-weight:600; }
-  .d-val   { font-size:12px; font-variant-numeric:tabular-nums; }
+  .d-val   { font-size:13px; font-weight:600; font-variant-numeric:tabular-nums; }
   .d-val.nc { fill:var(--muted); }
   .d-val.live { fill:var(--accent); }
   .d-label { font-size:13px; font-weight:600; }
@@ -103,34 +103,7 @@
   <span class="chip">Upload <b>every 5 s</b> · page refresh <b>10 s</b></span>
 </div>
 
-<h2>Current</h2>
-<div class="grid">
-  <div class="card big"><div class="label">Load current</div><div class="val" id="curA">—</div></div>
-  <div class="card"><div class="label">Sensor output (GPIO34)</div><div class="val" id="curV">—</div></div>
-</div>
-
-<h2>Voltage channels <span>raw ADC readings, before conversion to battery volts</span></h2>
-<div class="grid" id="vgrid"></div>
-
-<h2>Trends <span>last 30 minutes</span></h2>
-<div class="charts">
-  <div class="chartcard">
-    <div class="row"><strong id="curTitle">Current (A)</strong></div>
-    <canvas id="curChart"></canvas>
-  </div>
-  <div class="chartcard">
-    <div class="row">
-      <strong>Raw ADC voltages (V)</strong>
-      <select id="boardSel">
-        <option value="0">V-board 1 · CH1–4</option>
-        <option value="1">V-board 2 · CH5–8</option>
-        <option value="2">V-board 3 · CH9–12</option>
-      </select>
-    </div>
-    <canvas id="vChart"></canvas>
-  </div>
-</div>
-
+<!-- ============ 1. System layout ============ -->
 <h2>System layout <span>live values on each tap</span></h2>
 <div class="diagram">
   <svg id="diagram" viewBox="0 0 1000 560" xmlns="http://www.w3.org/2000/svg"></svg>
@@ -143,7 +116,31 @@
   </div>
 </div>
 
-<footer>Tap layout and bank voltage are estimates until confirmed on site. Channels show N/C until wired and calibrated.</footer>
+<!-- ============ 2. Trends ============ -->
+<h2>Trends <span>last 30 minutes</span></h2>
+<div class="charts">
+  <div class="chartcard">
+    <div class="row"><strong>Load current (A) <small id="curTag"></small></strong></div>
+    <canvas id="curChart"></canvas>
+  </div>
+  <div class="chartcard">
+    <div class="row">
+      <strong>Battery voltage per channel (V)</strong>
+      <select id="boardSel">
+        <option value="0">V-board 1 · CH1–4</option>
+        <option value="1">V-board 2 · CH5–8</option>
+        <option value="2">V-board 3 · CH9–12</option>
+      </select>
+    </div>
+    <canvas id="vChart"></canvas>
+  </div>
+</div>
+
+<!-- ============ 3. Raw readings ============ -->
+<h2>Raw readings <span>ADC volts before conversion · ~1.43 V = 0 V input</span></h2>
+<div class="grid" id="vgrid"></div>
+
+<footer>Tap layout and bank voltage are estimates until confirmed on site. Channels show 0 V (N/C) until wired and calibrated.</footer>
 
 </div>
 
@@ -159,11 +156,15 @@ const N_CH     = N_BOARDS * 4;                 // 12 channels
 const GROUPS   = [7,7,7,7,7,7,7,7,7,8,8,8];    // cells per channel (87 total)
 
 // Battery-side conversion per channel:  batteryV = (rawV - ZERO_V[i]) * SCALE[i]
-// Leave SCALE[i] = null while a channel is NOT wired to the battery -> shown as "N/C"
+// Leave SCALE[i] = null while a channel is NOT wired to the battery -> shown as 0 V (N/C)
 const ZERO_V = Array(N_CH).fill(1.435);        // raw reading at 0 V input
 const SCALE  = Array(N_CH).fill(null);         // fill in after calibration
 
 const CURRENT_CONNECTED = false;               // set true once the clamp is on the load cable
+
+// Chart axis ranges (they grow automatically if readings go higher)
+const CUR_AXIS_MAX = 10;   // A
+const V_AXIS_MAX   = 15;   // V per channel
 
 // Sheet columns
 const COL_TIME = 0, COL_ADS = 2, COL_IV = 14, COL_IA = 15;
@@ -182,80 +183,97 @@ function el(tag, attrs, parent, text) {
   return e;
 }
 
+// Battery volts for channel i in a row (0 if not connected)
+function battV(i, row) {
+  if (!row || SCALE[i] === null) return 0;
+  const raw = num(row[COL_ADS + i]);
+  return raw === null ? null : (raw - ZERO_V[i]) * SCALE[i];
+}
+// Load current in a row (0 if not connected)
+function loadA(row) {
+  if (!row || !CURRENT_CONNECTED) return 0;
+  return num(row[COL_IA]);
+}
+
 // ================= Raw value cards =================
 const vgrid = document.getElementById("vgrid");
 for (let b = 0; b < N_BOARDS; b++)
   for (let ch = 0; ch < 4; ch++)
     vgrid.insertAdjacentHTML("beforeend",
       `<div class="card"><div class="label">CH${b * 4 + ch + 1} · ADS${b + 1} AIN${ch}</div>
-       <div class="val" id="v${b}${ch}">—</div></div>`);
+       <div class="val nc" id="v${b}${ch}">—</div></div>`);
+vgrid.insertAdjacentHTML("beforeend",
+  `<div class="card cur"><div class="label">Current sensor · GPIO34</div>
+   <div class="val nc" id="curV">—</div></div>`);
 
 // ================= Charts =================
-const baseOpts = {
+const axisX = { ticks: { color: "#8b949e", maxTicksLimit: 6 }, grid: { color: "#222" } };
+const axisY = (unit, max) => ({
+  min: 0, suggestedMax: max,
+  ticks: { color: "#8b949e", callback: v => v + " " + unit },
+  grid: { color: "#222" }
+});
+const common = {
   responsive: true, maintainAspectRatio: false, animation: false,
   interaction: { mode: "index", intersect: false },
-  scales: {
-    x: { ticks: { color: "#8b949e", maxTicksLimit: 6 }, grid: { color: "#222" } },
-    y: { ticks: { color: "#8b949e" }, grid: { color: "#222" } }
-  },
-  plugins: { legend: { labels: { color: "#e6e9ec" } } },
   elements: { point: { radius: 0 }, line: { borderWidth: 2 } },
   spanGaps: true
 };
 
-document.getElementById("curTitle").textContent =
-  CURRENT_CONNECTED ? "Current (A)" : "Current sensor output (V) · not connected";
+document.getElementById("curTag").textContent = CURRENT_CONNECTED ? "" : "· N/C";
 
 const curChart = new Chart(document.getElementById("curChart"), {
   type: "line",
-  data: { labels: [], datasets: [{ label: "Current", data: [], borderColor: COLORS[0] }] },
-  options: { ...baseOpts, plugins: { legend: { display: false } } }
+  data: { labels: [], datasets: [{ label: "Load current", data: [], borderColor: COLORS[0] }] },
+  options: { ...common, scales: { x: axisX, y: axisY("A", CUR_AXIS_MAX) },
+             plugins: { legend: { display: false } } }
 });
 
 const vChart = new Chart(document.getElementById("vChart"), {
   type: "line",
   data: { labels: [], datasets: [0, 1, 2, 3].map(ch => ({
-    label: "AIN" + ch, data: [], borderColor: COLORS[ch] })) },
-  options: baseOpts
+    label: "CH" + (ch + 1), data: [], borderColor: COLORS[ch] })) },
+  options: { ...common, scales: { x: axisX, y: axisY("V", V_AXIS_MAX) },
+             plugins: { legend: { labels: { color: "#e6e9ec" } } } }
 });
 
 document.getElementById("boardSel").addEventListener("change", drawVoltChart);
 
 // ================= System diagram =================
-const chText = [], tapEls = [], brdEls = [], flowEls = [];
-let mainBrd, curDiag;
+const chVal = [], chTag = [], tapEls = [], brdEls = [], flowEls = [];
+let mainBrd, curVal, curTagD;
 
 function buildDiagram() {
   const svg = document.getElementById("diagram");
-  const X0 = 60, X1 = 940, BY = 70, BH = 50;
+  const X0 = 60, X1 = 940, BY = 74, BH = 50;
   const nCells = GROUPS.reduce((a, b) => a + b, 0);
   const CW = (X1 - X0) / nCells;
   const BOX = { x: 330, y: 300, w: 340, h: 140 };
 
-  el("text", { x: 500, y: 34, class: "d-title", "text-anchor": "middle" }, svg,
+  el("text", { x: 500, y: 20, class: "d-title", "text-anchor": "middle" }, svg,
      `NiCd battery bank · ${nCells} cells · ~104 V nominal (estimate)`);
-  el("text", { x: 52,  y: 62, class: "term", "text-anchor": "middle" }, svg, "−");
-  el("text", { x: 948, y: 62, class: "term", "text-anchor": "middle" }, svg, "+");
+  el("text", { x: 44,  y: 104, class: "term", "text-anchor": "middle" }, svg, "−");
+  el("text", { x: 956, y: 88,  class: "term", "text-anchor": "middle" }, svg, "+");
 
   // Main cables: bank + -> load -> bank −
-  const posD = "M 940 95 H 975 V 525 H 900";
-  const negD = "M 760 525 H 25 V 95 H 60";
+  const posD = "M 940 99 H 975 V 525 H 900";
+  const negD = "M 720 525 H 25 V 99 H 60";
   el("path", { d: posD, class: "cable pos" }, svg);
   el("path", { d: negD, class: "cable neg" }, svg);
   flowEls.push(el("path", { d: posD, class: "flow" }, svg));
   flowEls.push(el("path", { d: negD, class: "flow" }, svg));
 
-  // Cell groups
+  // Cell groups + reading above each segment
   let cell = 0;
   GROUPS.forEach((n, g) => {
-    const gx = X0 + cell * CW, gw = n * CW;
+    const gx = X0 + cell * CW, gw = n * CW, mx = gx + gw / 2;
+    chVal[g] = el("text", { x: mx, y: 44, class: "d-val nc", "text-anchor": "middle" }, svg, "0.00 V");
+    chTag[g] = el("text", { x: mx, y: 60, class: "d-small", "text-anchor": "middle" }, svg, "(N/C)");
     el("rect", { x: gx, y: BY - 4, width: gw, height: BH + 8, rx: 4,
                  class: g % 2 ? "grp-b" : "grp-a" }, svg);
     for (let k = 0; k < n; k++)
       el("rect", { x: X0 + (cell + k) * CW + 1, y: BY, width: CW - 2, height: BH,
                    rx: 1.5, class: "cell" }, svg);
-    el("text", { x: gx + gw / 2, y: BY - 10, class: "d-small", "text-anchor": "middle" }, svg,
-       `${cell + 1}–${cell + n}`);
     cell += n;
   });
 
@@ -266,17 +284,18 @@ function buildDiagram() {
     const tx = X0 + c * CW;
     const ex = BOX.x + 20 + i * ((BOX.w - 40) / N_CH);
     tapEls.push(el("path", {
-      d: `M ${tx} ${BY + BH + 4} V ${BY + BH + 58} L ${ex} ${BOX.y - 20} V ${BOX.y}`,
+      d: `M ${tx} ${BY + BH + 4} V ${BY + BH + 56} L ${ex} ${BOX.y - 20} V ${BOX.y}`,
       class: "tap nc" }, svg));
     el("circle", { cx: tx, cy: BY + BH + 4, r: 3, class: "tap-dot" }, svg);
   });
 
-  // Channel labels and live values
+  // Channel name + cell range below each segment
   cell = 0;
   GROUPS.forEach((n, g) => {
     const mx = X0 + (cell + n / 2) * CW;
-    el("text", { x: mx, y: BY + BH + 26, class: "d-ch", "text-anchor": "middle" }, svg, "CH" + (g + 1));
-    chText[g] = el("text", { x: mx, y: BY + BH + 42, class: "d-val nc", "text-anchor": "middle" }, svg, "N/C");
+    el("text", { x: mx, y: BY + BH + 24, class: "d-ch",    "text-anchor": "middle" }, svg, "CH" + (g + 1));
+    el("text", { x: mx, y: BY + BH + 40, class: "d-small", "text-anchor": "middle" }, svg,
+       `cells ${cell + 1}–${cell + n}`);
     cell += n;
   });
 
@@ -301,27 +320,29 @@ function buildDiagram() {
      "ESP32 → WiFi → Google Sheet → this page");
 
   // Current sensor (one direction, towards the load)
-  el("text", { x: 955, y: 345, class: "d-label", "text-anchor": "end" }, svg, "Current sensor");
-  el("text", { x: 955, y: 361, class: "d-note",  "text-anchor": "end" }, svg, "one direction → load");
-  curDiag = el("text", { x: 955, y: 380, class: "d-val nc", "text-anchor": "end" }, svg, "N/C");
+  el("text", { x: 955, y: 322, class: "d-label", "text-anchor": "end" }, svg, "Current sensor");
+  el("text", { x: 955, y: 338, class: "d-note",  "text-anchor": "end" }, svg, "one direction → load");
+  curVal  = el("text", { x: 955, y: 360, class: "d-val nc", "text-anchor": "end" }, svg, "0.00 A");
+  curTagD = el("text", { x: 955, y: 376, class: "d-small",  "text-anchor": "end" }, svg, "(N/C)");
   el("rect", { x: 962, y: 395, width: 26, height: 50, rx: 8, class: "clamp" }, svg);
   el("path", { d: "M 962 425 H 670", class: "sig" }, svg);
   el("path", { d: "M 968 458 L 982 458 L 975 470 Z", class: "arrow" }, svg);
   el("path", { d: "M 932 518 L 932 532 L 920 525 Z", class: "arrow" }, svg);
 
   // Load
-  el("rect", { x: 760, y: 500, width: 140, height: 50, rx: 8, class: "load" }, svg);
-  el("text", { x: 830, y: 521, class: "d-label", "text-anchor": "middle" }, svg, "Load");
-  el("text", { x: 830, y: 538, class: "d-note",  "text-anchor": "middle" }, svg, "light load (repurposed bank)");
+  el("rect", { x: 720, y: 500, width: 180, height: 50, rx: 8, class: "load" }, svg);
+  el("text", { x: 810, y: 521, class: "d-label", "text-anchor": "middle" }, svg, "Load");
+  el("text", { x: 810, y: 538, class: "d-note",  "text-anchor": "middle" }, svg, "light load (repurposed bank)");
 }
 
 function updateDiagram(last) {
   const live = [];
   for (let i = 0; i < N_CH; i++) {
-    const raw = last ? num(last[COL_ADS + i]) : null;
-    live[i] = SCALE[i] !== null && raw !== null;
-    chText[i].textContent = live[i] ? ((raw - ZERO_V[i]) * SCALE[i]).toFixed(2) + " V" : "N/C";
-    chText[i].setAttribute("class", "d-val " + (live[i] ? "live" : "nc"));
+    live[i] = SCALE[i] !== null && last && num(last[COL_ADS + i]) !== null;
+    const v = live[i] ? battV(i, last) : 0;
+    chVal[i].textContent = v.toFixed(2) + " V";
+    chVal[i].setAttribute("class", "d-val " + (live[i] ? "live" : "nc"));
+    chTag[i].textContent = live[i] ? "" : "(N/C)";
   }
 
   tapEls.forEach((t, i) => {
@@ -329,20 +350,19 @@ function updateDiagram(last) {
     t.setAttribute("class", "tap " + (on ? "live" : "nc"));
   });
 
-  let anyBoard = false;
   brdEls.forEach((b, j) => {
     let on = false;
     for (let ch = 0; ch < 4; ch++)
       if (last && num(last[COL_ADS + j * 4 + ch]) !== null) on = true;
-    anyBoard = anyBoard || on;
     b.setAttribute("class", "brd" + (on ? " on" : ""));
   });
   mainBrd.setAttribute("class", "brd" + (last ? " on" : ""));
 
-  const a = last ? num(last[COL_IA]) : null;
+  const a = loadA(last);
   const curLive = CURRENT_CONNECTED && a !== null;
-  curDiag.textContent = curLive ? a.toFixed(2) + " A" : "N/C";
-  curDiag.setAttribute("class", "d-val " + (curLive ? "live" : "nc"));
+  curVal.textContent = (curLive ? a : 0).toFixed(2) + " A";
+  curVal.setAttribute("class", "d-val " + (curLive ? "live" : "nc"));
+  curTagD.textContent = curLive ? "" : "(N/C)";
   flowEls.forEach(f => f.setAttribute("class", "flow" + (curLive && a > 0.2 ? " on" : "")));
 }
 
@@ -357,8 +377,9 @@ function drawVoltChart() {
   const b = +document.getElementById("boardSel").value;
   vChart.data.labels = rows.map(r => fmtT(r[COL_TIME]));
   for (let ch = 0; ch < 4; ch++) {
-    vChart.data.datasets[ch].label = `CH${b * 4 + ch + 1}`;
-    vChart.data.datasets[ch].data = rows.map(r => num(r[COL_ADS + b * 4 + ch]));
+    const i = b * 4 + ch;
+    vChart.data.datasets[ch].label = `CH${i + 1}` + (SCALE[i] === null ? " (N/C)" : "");
+    vChart.data.datasets[ch].data = rows.map(r => battV(i, r));
   }
   vChart.update("none");
 }
@@ -368,25 +389,18 @@ function render() {
   updateDiagram(last);
   if (!last) { setStatus("warn", "No data yet for today"); return; }
 
-  // Current cards
-  const a = num(last[COL_IA]), v = num(last[COL_IV]);
-  const curA = document.getElementById("curA");
-  if (CURRENT_CONNECTED && a !== null) { curA.textContent = a.toFixed(2) + " A"; curA.className = "val"; }
-  else { curA.textContent = "Not connected"; curA.className = "val nc"; }
-  document.getElementById("curV").textContent = v === null ? "—" : v.toFixed(4) + " V";
-
-  // Raw voltage cards
+  // Raw cards
   for (let b = 0; b < N_BOARDS; b++)
     for (let ch = 0; ch < 4; ch++) {
       const x = num(last[COL_ADS + b * 4 + ch]);
-      const e = document.getElementById(`v${b}${ch}`);
-      e.textContent = x === null ? "Offline" : x.toFixed(4) + " V";
-      e.className = "val" + (x === null || SCALE[b * 4 + ch] === null ? " nc" : "");
+      document.getElementById(`v${b}${ch}`).textContent = x === null ? "Offline" : x.toFixed(4) + " V";
     }
+  const v = num(last[COL_IV]);
+  document.getElementById("curV").textContent = v === null ? "—" : v.toFixed(4) + " V";
 
   // Charts
   curChart.data.labels = rows.map(r => fmtT(r[COL_TIME]));
-  curChart.data.datasets[0].data = rows.map(r => num(r[CURRENT_CONNECTED ? COL_IA : COL_IV]));
+  curChart.data.datasets[0].data = rows.map(r => loadA(r));
   curChart.update("none");
   drawVoltChart();
 
